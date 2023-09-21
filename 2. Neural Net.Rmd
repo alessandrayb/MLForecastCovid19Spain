@@ -1,0 +1,338 @@
+---
+title: "2. Neuralnet"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Neural Net
+
+https://datascienceplus.com/neuralnet-train-and-test-neural-networks-using-r/
+
+## Data 
+
+```{r}
+library(neuralnet)
+source("read/read_neuralnet.R")
+```
+
+## Prepare time series
+
+```{r}
+m <- 53 # coger todo el año -> explicar las dinámicas anuales
+ny <- 1
+mi <- min(cases_tot$incid)*0.9
+ma <- max(cases_tot$incid)*1.1
+
+dades <- ts(cases_tot$incid)
+for (i in 1:m){
+  dades <- ts.intersect(dades,stats::lag(cases_tot$incid,-i))
+}
+
+dades <- as.data.frame(dades)
+names(dades) <- paste0("y",c("",paste0("_",1:m)))
+dades <- (dades-mi)/(ma-mi)
+```
+
+## Neural network
+
+```{r}
+kf <- 1
+npred <- 53
+idx <- c(rep(1,nrow(dades)-npred),rep(2,npred)) #definir indice
+
+train <- as.matrix(dades[idx!=2,])
+test <- as.matrix(dades[idx==2,])
+
+resp <- "y"
+if(ny>1) resp <- paste0(resp,c("",paste0("_",1:(ny-1))),collapse="+")
+expl <- paste0("y_",ny:m, collapse = "+")
+f <- as.formula(paste0(resp, "~",expl))
+```
+
+```{r}
+set.seed(123456)
+net <- neuralnet(f, train, lifesign="full", lifesign.step =5000, hidden = c(7,5), rep=1, threshold=0.00125)
+
+plot(net) #saved as 950*800
+```
+
+## Predictions
+
+```{r}
+pred.train <- mi+predict(net,train[nrow(train)-(npred-1):0,-c(1:ny)])*(ma-mi)
+pred.test <- mi+predict(net,test[,-c(1:ny)])*(ma-mi)
+```
+
+```{r}
+obs.train <- mi+train[nrow(train)-(npred-1):0, 1:ny]*(ma-mi) #train data
+obs.test <- mi+test[,1:ny]*(ma-mi) #test data
+```
+
+## Plot
+
+```{r}
+df_plot <- as.data.frame(cbind(cases_tot[109:161, ], pred.test))
+df_plot2 <- df_plot %>% rename(Original = incid,
+                              Predicted = pred.test)
+
+library(ggplot2)
+# png(file="figures/neuralnet_test.png",
+#     width=850, height=500)
+ggplot(data = df_plot2, aes(x=date)) +
+  geom_line(aes(y=Original, color="Original"))+
+  geom_line(aes(y=Predicted, color="Predicted"))+
+  labs(x="Weeks", y="Weekly cases per 100 000")+
+  scale_color_manual(name="Data", values = c(
+    "Original"="black", 
+    "Predicted"="red"))+ 
+  theme_minimal()
+# dev.off()
+```
+
+## Error measurements
+
+```{r}
+measures=function(pred,obs){
+  
+  err=pred-obs
+  perr=err/pred
+  
+  c(RMSE=sqrt(mean(err^2)),
+    MAE=mean(abs(err)),
+    nMSE=sqrt(mean(err^2))/mean(pred),
+    nMAE=mean(abs(err))/mean(pred),
+    RMSPE=sqrt(mean(perr^2)),
+    MAPE=mean(abs(perr)))
+}
+```
+
+```{r}
+error_train <- measures(pred.train, obs.train)
+error_train
+```
+
+```{r}
+error_test <- measures(pred.test, obs.test)
+error_test
+```
+
+########
+
+## Predictions with test data
+
+Run the model 500 times and obtain 500 predictions for the 53 weeks in the test dataset. 
+
+```{r}
+# Results
+load(file="read/2. Neuralnet-predictions500.RData")
+```
+
+Los siguientes 2 chunks no hace falta ejecutarlos. Los resultados se cargan en el chunk anterior. 
+
+```{r}
+predictions <- vector("list", 500)
+set.seed(123)
+seeds <- runif(500,1,100000)
+```
+
+```{r}
+for(i in 1:length(predictions)){
+  set.seed(seeds[i])
+  net <- neuralnet(f, train, lifesign="full", lifesign.step =5000, hidden = c(7,5), rep=1, threshold=0.00125)
+  
+  pred.test <-mi+predict(net,test[,-c(1:ny)])*(ma-mi) #test
+  predictions[[i]] <- pred.test
+}
+```
+
+### Median points
+
+```{r}
+n <- length(predictions[[1]])
+predictions_df <- structure(predictions, row.names = c(NA, -n), .Names = seq_along(predictions), class = "data.frame")
+```
+
+```{r}
+predictions_median <- apply(as.matrix(predictions_df), 1, function(x){quantile(x, c(0.5))})
+```
+
+```{r}
+df_plot <- as.data.frame(cbind(cases_week[109:161, ],predictions_median))
+df_plot2 <- df_plot %>% rename(Original = incid,
+                                 Median_Predicted = ...5)
+
+ggplot(data = df_plot2, aes(x=date)) +
+  geom_line(aes(y=Original, color="Original"))+
+  geom_line(aes(y=Median_Predicted, color="Median_Predicted"))+
+  labs(x="Weeks", y="Weekly cases per 100 000")+
+  scale_color_manual(name="Data", values = c(
+    "Original"="black", 
+    "Median_Predicted"="red"))+ 
+  theme_minimal()
+```
+
+
+### Credible interval   
+
+```{r}
+CI <- apply(as.matrix(predictions_df), 1, function(x){quantile(x, c(0.025, 0.5, 0.975))})
+```
+
+```{r}
+CI_t <- as.data.frame(t(CI))
+colnames(CI_t) <- c("CI_low", "Median", "CI_upper")
+```
+
+```{r}
+neuralnet500 <- cbind(df_plot2, CI_t)
+```
+
+```{r}
+library(ggplot2)
+# png(file="figures/neuralnet_500.png",
+#     width=850, height=500)
+ggplot(data = neuralnet500, aes(x=date)) +
+  geom_line(aes(y=Original, color="Original"))+
+  geom_line(aes(y=Median_Predicted, color="Median_Predicted"))+
+  geom_ribbon(aes(ymin=CI_low, ymax=CI_upper), alpha = 0.1)+
+  labs(x="Weeks", y="Weekly cases per 100 000")+
+  scale_color_manual(name="Data", values = c(
+    "Original"="black",
+    "Median_Predicted"="red"))+
+  theme_minimal()
+# dev.off()
+```
+
+### Error measurements
+
+```{r}
+measures=function(pred,obs){
+
+  err=pred-obs
+  perr=err/pred
+
+  c(RMSE=sqrt(mean(err^2)),
+    MAE=mean(abs(err)),
+    nMSE=sqrt(mean(err^2))/mean(pred),
+    nMAE=mean(abs(err))/mean(pred),
+    RMSPE=sqrt(mean(perr^2)),
+    MAPE=mean(abs(perr)))
+}
+```
+
+```{r}
+error_test <- measures(neuralnet500$Median_Predicted, neuralnet500$Original)
+error_test
+```
+########
+
+
+## Predictions with train data
+
+Run the model 500 times and obtain 500 predictions for 53 weeks in the train dataset. 
+
+```{r}
+# Results
+load(file="read/2. Neuralnet-predictions500_train.RData")
+```
+
+Los siguientes 2 chunks no hace falta ejecutarlos. Los resultados se cargan en el chunk anterior. 
+
+```{r}
+predictions <- vector("list", 500)
+set.seed(123)
+seeds <- runif(500,1,100000)
+```
+
+```{r}
+for(i in 1:length(predictions)){
+  set.seed(seeds[i])
+  net <- neuralnet(f, train, lifesign="full", lifesign.step =5000, hidden = c(7,5), rep=1, threshold=0.00125)
+  
+  pred.train <- mi+predict(net,train[nrow(train)-(npred-1):0,-c(1:ny)])*(ma-mi) #train
+  predictions[[i]] <- pred.train
+}
+```
+
+### Median points
+
+```{r}
+n <- length(predictions[[1]])
+predictions_df <- structure(predictions, row.names = c(NA, -n), .Names = seq_along(predictions), class = "data.frame")
+```
+
+```{r}
+predictions_median <- apply(as.matrix(predictions_df), 1, function(x){quantile(x, c(0.5))})
+```
+
+```{r}
+df_plot <- as.data.frame(cbind(cases_week[55:107, ],predictions_median)) #first 53
+df_plot2 <- df_plot %>% rename(Original = incid,
+                                 Median_Predicted = ...5)
+
+ggplot(data = df_plot2, aes(x=date)) +
+  geom_line(aes(y=Original, color="Original"))+
+  geom_line(aes(y=Median_Predicted, color="Median_Predicted"))+
+  labs(x="Weeks", y="Weekly cases per 100 000")+
+  scale_color_manual(name="Data", values = c(
+    "Original"="black", 
+    "Median_Predicted"="blue"))+ 
+  theme_minimal()
+```
+
+
+### Credible interval   
+
+```{r}
+CI <- apply(as.matrix(predictions_df), 1, function(x){quantile(x, c(0.025, 0.5, 0.975))})
+```
+
+```{r}
+CI_t <- as.data.frame(t(CI))
+colnames(CI_t) <- c("CI_low", "Median", "CI_upper")
+```
+
+```{r}
+neuralnet500_train <- cbind(df_plot2, CI_t)
+```
+
+```{r}
+library(ggplot2)
+# png(file="figures/neuralnet_500_train.png",
+#     width=850, height=500)
+ggplot(data = neuralnet500_train, aes(x=date)) +
+  geom_line(aes(y=Original, color="Original"))+
+  geom_line(aes(y=Median_Predicted, color="Median_Predicted"))+
+  geom_ribbon(aes(ymin=CI_low, ymax=CI_upper), alpha = 0.1)+
+  labs(x="Weeks", y="Weekly cases per 100 000")+
+  scale_color_manual(name="Data", values = c(
+    "Original"="black",
+    "Median_Predicted"="blue"))+
+  theme_minimal()
+# dev.off()
+```
+
+### Error measurements
+
+```{r}
+measures=function(pred,obs){
+
+  err=pred-obs
+  perr=err/pred
+
+  c(RMSE=sqrt(mean(err^2)),
+    MAE=mean(abs(err)),
+    nMSE=sqrt(mean(err^2))/mean(pred),
+    nMAE=mean(abs(err))/mean(pred),
+    RMSPE=sqrt(mean(perr^2)),
+    MAPE=mean(abs(perr)))
+}
+```
+
+```{r}
+error_train <- measures(neuralnet500_train$Median_Predicted, neuralnet500_train$Original)
+error_train
+```

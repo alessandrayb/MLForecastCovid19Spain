@@ -1,0 +1,184 @@
+---
+title: "3. Prophet"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Prophet
+
+```{r}
+library(prophet)
+```
+
+## Prepare data
+
+```{r}
+source("read/read_lstm_prophet.R")
+```
+
+https://facebook.github.io/prophet/docs/quick_start.html#r-api
+
+Add cap in the df and also for predictions 
+
+```{r}
+sub_week <- as.data.frame(train)
+colnames(sub_week) <- c("ds", "y")
+sub_week$cap <- 9000
+sub_week$floor <- 0
+```
+
+Logistic growth works better than linear
+
+```{r}
+cases_prophet <- prophet(sub_week, 
+                         growth = "linear",
+                         yearly.seasonality = TRUE,
+                         weekly.seasonality = TRUE,
+                         interval.width = 0.95)
+```
+
+## Predictions with test data
+
+```{r}
+future <- make_future_dataframe(cases_prophet, periods = 53, freq = "week")
+future$cap <- 9000
+future$floor <- 0
+forecast <- predict(cases_prophet, future)
+tail(forecast[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')])
+
+ci <- cbind(forecast$yhat_lower[109:161], forecast$yhat_upper[109:161])
+colnames(ci) <- c("CI_low", "CI_upper")
+```
+
+```{r}
+plot(cases_prophet, forecast)+
+  theme_minimal()+
+  labs(x="Date", y="Weekly cases per 100 000")+
+   scale_color_manual(name="Data", values = c(
+    "Original"="black", 
+    "Predicted"="blue"))
+```
+
+```{r}
+prophet_plot_components(cases_prophet, forecast)+theme_minimal()
+```
+
+### Plot
+
+```{r}
+df_plot <- as.data.frame(cbind(test, forecast$yhat[109:161], ci))
+df_plot2 <- df_plot %>% rename(Original = incid,
+                              Predicted = `forecast$yhat[109:161]`)
+
+library(ggplot2)
+# png(file="figures/prophet_test.png",
+#     width=850, height=500)
+ggplot(data = df_plot2, aes(x=date)) +
+  geom_line(aes(y=Original, color="Original"))+
+  geom_line(aes(y=Predicted, color="Predicted"))+
+  geom_ribbon(aes(ymin=CI_low, ymax=CI_upper), alpha = 0.1)+
+  labs(x="Weeks", y="Weekly cases per 100 000")+
+  scale_color_manual(name="Data", values = c(
+    "Original"="black",
+    "Predicted"="red"))+
+  theme_minimal()
+# dev.off()
+```
+
+### Error measurements
+
+```{r}
+measures=function(pred,obs){
+  
+  err=pred-obs
+  perr=err/pred
+  
+  c(RMSE=sqrt(mean(err^2)),
+    MAE=mean(abs(err)),
+    nMSE=sqrt(mean(err^2))/mean(pred),
+    nMAE=mean(abs(err))/mean(pred),
+    RMSPE=sqrt(mean(perr^2)),
+    MAPE=mean(abs(perr)))
+}
+```
+
+```{r}
+error_test <- measures(forecast$yhat[109:161], test$incid)
+error_test
+```
+
+#######
+
+## Predictions with train data
+
+```{r}
+train_pred <- as.data.frame(train$date)
+names(train_pred)[1] <- "ds"
+train_pred$cap <- 9000
+train_pred$floor <- 0
+
+forecast <- predict(cases_prophet, train_pred)
+tail(forecast[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')])
+
+ci <- cbind(forecast$yhat_lower, forecast$yhat_upper)
+colnames(ci) <- c("CI_low", "CI_upper")
+```
+
+### Plot
+
+```{r}
+df_plot <- as.data.frame(cbind(train, forecast$yhat, ci))
+df_plot2 <- df_plot %>% rename(Original = incid,
+                              Predicted = `forecast$yhat`)
+
+library(ggplot2)
+# png(file="figures/prophet_train.png",
+#     width=850, height=500)
+ggplot(data = df_plot2, aes(x=date)) +
+  geom_line(aes(y=Original, color="Original"))+
+  geom_line(aes(y=Predicted, color="Predicted"))+
+  geom_ribbon(aes(ymin=CI_low, ymax=CI_upper), alpha = 0.1)+
+  labs(x="Weeks", y="Weekly cases per 100 000")+
+  scale_color_manual(name="Data", values = c(
+    "Original"="black",
+    "Predicted"="blue"))+
+  scale_x_date(date_labels =  "%b %Y") +
+  theme_minimal()
+# dev.off()
+```
+
+### Error measurements
+
+```{r}
+measures=function(pred,obs){
+  
+  err=pred-obs
+  perr=err/pred
+  
+  c(RMSE=sqrt(mean(err^2)),
+    MAE=mean(abs(err)),
+    nMSE=sqrt(mean(err^2))/mean(pred),
+    nMAE=mean(abs(err))/mean(pred),
+    RMSPE=sqrt(mean(perr^2)),
+    MAPE=mean(abs(perr)))
+}
+```
+
+```{r}
+error_train <- measures(forecast$yhat, train$incid)
+error_train
+```
+
+
+
+
+
+
+
+
+
+
+

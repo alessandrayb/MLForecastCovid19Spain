@@ -1,0 +1,487 @@
+---
+title: "2. LSTM"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# LSTM  
+
+```{r}
+library(keras)
+tensorflow::set_random_seed(1234) #Sets all random seeds needed to make TensorFlow code reproducible
+```
+
+```{r}
+source("read/read_lstm_prophet.R")
+```
+
+http://datasideoflife.com/?p=1171
+
+## Prep data
+
+```{r}
+# To be used for train and test datasets
+scale_factors <- c(mean(cases_week$incid), sd(cases_week$incid))
+```
+
+```{r}
+scaled_train <- train %>%
+    dplyr::select(incid) %>%
+    dplyr::mutate(incid = (incid - scale_factors[1]) / scale_factors[2])
+```
+
+How many weeks to predict
+```{r}
+prediction <- 53
+lag <- prediction
+```
+
+Scale and transform x_train
+```{r}
+scaled_train <- as.matrix(scaled_train)
+ 
+# we lag the data 53 times and arrange that into columns
+x_train_data <- t(sapply(
+    1:(length(scaled_train) - lag - prediction + 1),
+    function(x) scaled_train[x:(x + lag - 1), 1]  
+  ))
+ 
+# now we transform it into 3D form
+x_train_arr <- array(
+    data = as.numeric(unlist(x_train_data)),
+    dim = c(
+        nrow(x_train_data),
+        lag,
+        1
+    )
+)
+```
+
+```{r}
+y_train_data <- t(sapply(
+    (1 + lag):(length(scaled_train) - prediction + 1),
+    function(x) scaled_train[x:(x + prediction - 1)]
+))
+ 
+y_train_arr <- array(
+    data = as.numeric(unlist(y_train_data)),
+    dim = c(
+        nrow(y_train_data),
+        prediction,
+        1
+    )
+)
+```
+
+Scale and transform x_test
+```{r}
+x_test <- test$incid #[(nrow(scaled_test) - prediction + 1):nrow(scaled_test)]
+
+x_test_scaled <- (x_test - scale_factors[1]) / scale_factors[2]
+x_pred_arr <- array(
+    data = x_test_scaled,
+    dim = c(
+        1,
+        lag,
+        1
+    )
+)
+```
+
+
+## LSTM model
+
+```{r}
+lstm_model <- keras_model_sequential()
+ 
+lstm_model %>%
+  layer_lstm(units = 50, # size of the layer
+       batch_input_shape = c(1, 53, 1), # batch size, timesteps, features
+       return_sequences = TRUE,
+       stateful = TRUE) %>%
+  # fraction of the units to drop for the linear transformation of the inputs
+  layer_dropout(rate = 0.6) %>%
+  layer_lstm(units = 50,
+        return_sequences = TRUE,
+        stateful = TRUE) %>%
+  layer_dropout(rate = 0.2) %>%
+  time_distributed(keras::layer_dense(units = 1))
+```
+
+LSTM expects input data to be a 3D tensor such that:
+
+[batch_size, timesteps, feature]
+
+batch_size how many samples in each batch during training and testing
+
+timesteps means how many values exist in a sequence. For example in [4, 7, 8, 4] there are 4 timesteps
+
+features: how many dimensions are used to represent a data in one time step. For example, if each value in the sequence is one hot encoded with 9 zero and 1 one then feature is 10
+
+```{r}
+lstm_model %>%
+    compile(loss = 'mae', optimizer = 'adam', metrics = 'accuracy')
+ 
+summary(lstm_model)
+```
+
+## Fit data to model 
+
+```{r}
+lstm_model %>% fit(
+    x = x_train_arr,
+    y = y_train_arr,
+    batch_size = 1,
+    epochs = 100,
+    verbose = 0,
+    shuffle = FALSE
+)
+```
+
+## Forecast
+
+```{r}
+lstm_forecast <- lstm_model %>%
+    predict(x_pred_arr, batch_size = 1) %>%
+    .[, , 1]
+
+# we need to rescale the data to restore the original values
+lstm_forecast <- lstm_forecast * scale_factors[2] + scale_factors[1]
+```
+
+## Plot
+
+```{r}
+df_plot <- as.data.frame(cbind(cases_week[109:161,], lstm_forecast))
+df_plot2 <- df_plot %>% rename(Original = incid,
+                              Predicted = ...5)
+
+library(ggplot2)
+# png(file="figures/lstm_test.png",
+#     width=850, height=500)
+ggplot(data = df_plot2, aes(x=date)) +
+  geom_line(aes(y=Original, color="Original"))+
+  geom_line(aes(y=Predicted, color="Predicted"))+
+  labs(x="Weeks", y="Weekly cases per 100 000")+
+  scale_color_manual(name="Data", values = c(
+    "Original"="black",
+    "Predicted"="red"))+
+  theme_minimal()
+# dev.off()
+```
+
+
+## Error measurements
+```{r}
+measures=function(pred,obs){
+
+  err=pred-obs
+  perr=err/pred
+
+  c(RMSE=sqrt(mean(err^2)),
+    MAE=mean(abs(err)),
+    nMSE=sqrt(mean(err^2))/mean(pred),
+    nMAE=mean(abs(err))/mean(pred),
+    RMSPE=sqrt(mean(perr^2)),
+    MAPE=mean(abs(perr)))
+}
+```
+
+```{r}
+error_test <- measures(lstm_forecast, test$incid)
+error_test
+```
+########
+
+
+## Predictions with test data
+
+Run the model 500 times and obtain 500 predictions for the 53 weeks in the test dataset. 
+
+```{r}
+# Results
+load(file="read/3. LSTM-predictions500.RData")
+```
+
+LSTM model
+```{r}
+# Ejecutar si se hace el loop de nuevo
+lstm_model <- keras_model_sequential()
+ 
+lstm_model %>%
+  layer_lstm(units = 50, # size of the layer
+       batch_input_shape = c(1, 53, 1), # batch size, timesteps, features
+       return_sequences = TRUE,
+       stateful = TRUE) %>%
+  # fraction of the units to drop for the linear transformation of the inputs
+  layer_dropout(rate = 0.6) %>%
+  layer_lstm(units = 50,
+        return_sequences = TRUE,
+        stateful = TRUE) %>%
+  layer_dropout(rate = 0.2) %>%
+  time_distributed(keras::layer_dense(units = 1))
+
+lstm_model %>%
+    compile(loss = 'mae', optimizer = 'adam', metrics = 'accuracy')
+```
+
+Los siguientes 2 chunks no hace falta ejecutarlos. Los resultados se cargan en el chunk anterios. 
+
+```{r}
+predictions <- data.frame(matrix(0,53,500))
+set.seed(123)
+seeds <- runif(500,1,100000)
+```
+
+```{r}
+for(i in 1:ncol(predictions)){
+  
+  set.seed(seeds[i])
+  
+  lstm_model %>% fit(
+  x = x_train_arr,
+  y = y_train_arr,
+  batch_size = 1,
+  epochs = 100,
+  verbose = 0,
+  shuffle = FALSE
+)
+  lstm_forecast <- lstm_model %>%
+    predict(x_pred_arr, batch_size = 1) %>%
+    .[, , 1]
+  
+  predictions[, i] <- lstm_forecast * scale_factors[2] + scale_factors[1]
+}
+```
+
+### Median points
+
+```{r}
+predictions_median <- apply(as.matrix(predictions), 1, function(x){quantile(x, c(0.5))})
+```
+
+```{r}
+library(tidyverse)
+df_plot <- as.data.frame(cbind(cases_week[109:161, ],predictions_median))
+df_plot2 <- df_plot %>% rename(Original = incid,
+                                 Median_Predicted = ...5)
+
+ggplot(data = df_plot2, aes(x=date)) +
+  geom_line(aes(y=Original, color="Original"))+
+  geom_line(aes(y=Median_Predicted, color="Median_Predicted"))+
+  labs(x="Weeks", y="Weekly cases per 100 000")+
+  scale_color_manual(name="Data", values = c(
+    "Original"="black", 
+    "Median_Predicted"="red"))+ 
+  theme_minimal()
+```
+
+### Credible interval   
+
+```{r}
+CI <- apply(as.matrix(predictions), 1, function(x){quantile(x, c(0.025, 0.5, 0.975))})
+```
+
+```{r}
+CI_t <- as.data.frame(t(CI))
+colnames(CI_t) <- c("CI_low", "Median", "CI_upper")
+```
+
+```{r}
+lstm500 <- cbind(df_plot2, CI_t)
+```
+
+```{r}
+library(ggplot2)
+# png(file="figures/lstm_500.png",
+#     width=850, height=500)
+ggplot(data = lstm500, aes(x=date)) +
+  geom_line(aes(y=Original, color="Original"))+
+  geom_line(aes(y=Median_Predicted, color="Median_Predicted"))+
+  geom_ribbon(aes(ymin=CI_low, ymax=CI_upper), alpha = 0.1)+
+  labs(x="Weeks", y="Weekly cases per 100 000")+
+  scale_color_manual(name="Data", values = c(
+    "Original"="black",
+    "Median_Predicted"="red"))+
+  theme_minimal()
+# dev.off()
+```
+
+### Error measurements
+
+```{r}
+measures=function(pred,obs){
+
+  err=pred-obs
+  perr=err/pred
+
+  c(RMSE=sqrt(mean(err^2)),
+    MAE=mean(abs(err)),
+    nMSE=sqrt(mean(err^2))/mean(pred),
+    nMAE=mean(abs(err))/mean(pred),
+    RMSPE=sqrt(mean(perr^2)),
+    MAPE=mean(abs(perr)))
+}
+```
+
+```{r}
+error_test <- measures(lstm500$Median_Predicted, lstm500$Original)
+error_test
+```
+
+########
+
+
+## Predictions with train data
+
+Run the model 500 times and obtain 500 predictions for the 108 weeks in the train dataset. 
+
+```{r}
+# Results
+load(file="read/3. LSTM-predictions500_train.RData")
+```
+
+LSTM model
+```{r}
+# Ejecutar si se hace el loop de nuevo
+lstm_model <- keras_model_sequential()
+ 
+lstm_model %>%
+  layer_lstm(units = 50, # size of the layer
+       batch_input_shape = c(1, 53, 1), # batch size, timesteps, features
+       return_sequences = TRUE,
+       stateful = TRUE) %>%
+  # fraction of the units to drop for the linear transformation of the inputs
+  layer_dropout(rate = 0.6) %>%
+  layer_lstm(units = 50,
+        return_sequences = TRUE,
+        stateful = TRUE) %>%
+  layer_dropout(rate = 0.2) %>%
+  time_distributed(keras::layer_dense(units = 1))
+
+lstm_model %>%
+    compile(loss = 'mae', optimizer = 'adam', metrics = 'accuracy')
+```
+
+Los siguientes 3 chunks no hace falta ejecutarlos. Los resultados se cargan en el chunk anterior. 
+
+```{r}
+x_train_pred <- train$incid
+x_train_pred_scaled <- (x_train_pred - scale_factors[1]/scale_factors[2])
+x_train_pred_arr <- array(
+    data = x_train_pred_scaled,
+    dim = c(
+        1,
+        53,
+        1
+    )
+)
+```
+
+```{r}
+predictions <- data.frame(matrix(0,53,500))
+set.seed(123)
+seeds <- runif(500,1,100000)
+```
+
+```{r}
+for(i in 1:ncol(predictions)){
+  
+  set.seed(seeds[i])
+  
+  lstm_model %>% fit(
+  x = x_train_arr,
+  y = y_train_arr,
+  batch_size = 1,
+  epochs = 100,
+  verbose = 0,
+  shuffle = FALSE
+)
+  lstm_forecast <- lstm_model %>%
+    predict(x_train_pred_arr, batch_size = 1) %>%
+    .[, , 1]
+  
+  predictions[, i] <- lstm_forecast * scale_factors[2] + scale_factors[1]
+}
+```
+
+### Median points
+
+```{r}
+predictions_median <- apply(as.matrix(predictions), 1, function(x){quantile(x, c(0.5))})
+```
+
+```{r}
+df_plot <- as.data.frame(cbind(cases_week[55:107, ],predictions_median)) # or 1:53 ?
+df_plot2 <- df_plot %>% rename(Original = incid,
+                                 Median_Predicted = ...5)
+
+ggplot(data = df_plot2, aes(x=date)) +
+  geom_line(aes(y=Original, color="Original"))+
+  geom_line(aes(y=Median_Predicted, color="Median_Predicted"))+
+  labs(x="Weeks", y="Weekly cases per 100 000")+
+  scale_color_manual(name="Data", values = c(
+    "Original"="black", 
+    "Median_Predicted"="blue"))+ 
+  theme_minimal()
+```
+
+### Credible interval   
+
+```{r}
+CI <- apply(as.matrix(predictions), 1, function(x){quantile(x, c(0.025, 0.5, 0.975))})
+```
+
+```{r}
+CI_t <- as.data.frame(t(CI))
+colnames(CI_t) <- c("CI_low", "Median", "CI_upper")
+```
+
+```{r}
+lstm500_train <- cbind(df_plot2, CI_t)
+```
+
+```{r}
+library(ggplot2)
+# png(file="figures/lstm_500_train.png",
+#     width=850, height=500)
+ggplot(data = lstm500_train, aes(x=date)) +
+  geom_line(aes(y=Original, color="Original"))+
+  geom_line(aes(y=Median_Predicted, color="Median_Predicted"))+
+  geom_ribbon(aes(ymin=CI_low, ymax=CI_upper), alpha = 0.1)+
+  labs(x="Weeks", y="Weekly cases per 100 000")+
+  scale_color_manual(name="Data", values = c(
+    "Original"="black",
+    "Median_Predicted"="blue"))+
+  theme_minimal()
+# dev.off()
+```
+
+### Error measurements
+
+```{r}
+measures=function(pred,obs){
+
+  err=pred-obs
+  perr=err/pred
+
+  c(RMSE=sqrt(mean(err^2)),
+    MAE=mean(abs(err)),
+    nMSE=sqrt(mean(err^2))/mean(pred),
+    nMAE=mean(abs(err))/mean(pred),
+    RMSPE=sqrt(mean(perr^2)),
+    MAPE=mean(abs(perr)))
+}
+```
+
+```{r}
+error_train <- measures(lstm500_train$Median_Predicted, lstm500_train$Original)
+error_train
+```
+
+
+
+

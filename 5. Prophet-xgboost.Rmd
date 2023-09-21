@@ -1,0 +1,214 @@
+---
+title: "4. Prophet-xgboost"
+output: html_document
+---
+
+https://github.com/business-science/modeltime/issues/25
+
+# Prophet - XGBoost
+
+Trend is modeled with Prophet and residuals with XGBoost. 
+
+```{r}
+library(tidymodels)
+library(modeltime)
+library(tidyverse)
+library(lubridate)
+library(timetk)
+```
+
+```{r}
+source("read/read_lstm_prophet.R")
+colnames(train) <- c("ds", "y")
+colnames(test) <- c("ds", "y")
+```
+
+## Prophet boost
+
+```{r}
+set.seed(1234)
+model_fit_prophet_boost <- prophet_boost(
+  growth = "linear",
+  # logistic_cap = 9000,
+  # logistic_floor = 0,
+  mtry = 1,
+  trees = 500, 
+  tree_depth = 6, 
+  learn_rate = 0.3,
+  seasonality_yearly = TRUE,
+  seasonality_weekly = TRUE,
+  seasonality_daily  = TRUE
+) %>%
+  set_engine(engine = "prophet_xgboost") %>%
+  fit(y ~ ds 
+      + as.numeric(ds)
+      + month(ds, label = TRUE) 
+      + fourier_vec(ds, period = 53), 
+      data = train)
+```
+
+## Predictions with test data
+
+```{r}
+forecast <- modeltime_table(
+  model_fit_prophet_boost
+) %>%
+  modeltime_calibrate(
+    new_data=test
+  ) %>%
+  modeltime_forecast(
+    new_data = test,
+    actual_data = train,
+    conf_interval = 0.95
+  ) %>%
+  plot_modeltime_forecast(
+    .conf_interval_show = TRUE,
+    .interactive        = FALSE
+  )
+
+ci <- cbind(forecast$data$.conf_lo[109:161], forecast$data$.conf_hi[109:161])
+colnames(ci) <- c("CI_low", "CI_upper")
+```
+
+### Plot
+
+```{r}
+df_plot <- as.data.frame(cbind(test, forecast$data$.value[109:161], ci))
+df_plot2 <- df_plot %>% rename(Original = y,
+                              Predicted = `forecast$data$.value[109:161]`)
+
+library(ggplot2)
+# png(file="figures/prophetxgboost_test.png",
+#     width=850, height=500)
+ggplot(data = df_plot2, aes(x=ds)) +
+  geom_line(aes(y=Original, color="Original"))+
+  geom_line(aes(y=Predicted, color="Predicted"))+
+  geom_ribbon(aes(ymin=CI_low, ymax=CI_upper), alpha = 0.1)+
+  labs(x="Weeks", y="Weekly cases per 100 000")+
+  scale_color_manual(name="Data", values = c(
+    "Original"="black",
+    "Predicted"="red"))+
+  theme_minimal()
+# dev.off()
+```
+
+### Error measurements
+
+```{r}
+measures=function(pred,obs){
+  
+  err=pred-obs
+  perr=err/pred
+  
+  c(RMSE=sqrt(mean(err^2)),
+    MAE=mean(abs(err)),
+    nMSE=sqrt(mean(err^2))/mean(pred),
+    nMAE=mean(abs(err))/mean(pred),
+    RMSPE=sqrt(mean(perr^2)),
+    MAPE=mean(abs(perr)))
+}
+```
+
+```{r}
+error_test <- measures(df_plot2$Predicted, df_plot2$Original)
+error_test
+```
+
+######
+
+## Predictions with train data
+
+```{r}
+set.seed(1234)
+model_fit_prophet_boost <- prophet_boost(
+  growth = "linear",
+  # logistic_cap = 9000,
+  # logistic_floor = 0,
+  mtry = 1,
+  trees = 500, 
+  tree_depth = 6, 
+  learn_rate = 0.3,
+  seasonality_yearly = TRUE,
+  seasonality_weekly = TRUE,
+  seasonality_daily  = FALSE
+) %>%
+  set_engine(engine = "prophet_xgboost") %>%
+  fit(y ~ ds 
+      + as.numeric(ds)
+      + month(ds, label = TRUE),
+      data = train)
+```
+
+### Model 
+```{r}
+prophetxgboost_train <- modeltime_table(
+  model_fit_prophet_boost
+) %>%
+  modeltime_calibrate(
+    new_data=train
+  ) %>%
+  modeltime_forecast(
+    new_data = train,
+    actual_data = train,
+    conf_interval = 0.95
+  ) %>%
+  plot_modeltime_forecast(
+    .conf_interval_show = TRUE,
+    .interactive        = TRUE
+  )
+```
+
+```{r}
+ci_low <- prophetxgboost_train[["x"]][["data"]][[2]][["y"]][1:108]
+ci_high <- as.data.frame(prophetxgboost_train[["x"]][["data"]][[2]][["y"]][110:217])
+ci_high <- ci_high[seq(dim(ci_high )[1],1),]
+
+ci <- cbind(ci_low, ci_high)
+colnames(ci) <- c("CI_low", "CI_upper")
+```
+
+### Plot
+
+```{r}
+df_plot <- as.data.frame(cbind(train, prophetxgboost_train[["x"]][["data"]][[4]][["y"]], ci))
+df_plot2 <- df_plot %>% rename(Original = y,
+                              Predicted = `prophetxgboost_train[["x"]][["data"]][[4]][["y"]]`)
+
+library(ggplot2)
+# png(file="figures/prophetxgboost_train.png",
+#     width=850, height=500)
+ggplot(data = df_plot2, aes(x=ds)) +
+  geom_line(aes(y=Original, color="Original"))+
+  geom_line(aes(y=Predicted, color="Predicted"))+
+  geom_ribbon(aes(ymin=CI_low, ymax=CI_upper), alpha = 0.1)+
+  labs(x="Weeks", y="Weekly cases per 100 000")+
+  scale_color_manual(name="Data", values = c(
+    "Original"="black",
+    "Predicted"="blue"))+
+  theme_minimal()
+# dev.off()
+```
+
+### Error measurements
+
+```{r}
+measures=function(pred,obs){
+  
+  err=pred-obs
+  perr=err/pred
+  
+  c(RMSE=sqrt(mean(err^2)),
+    MAE=mean(abs(err)),
+    nMSE=sqrt(mean(err^2))/mean(pred),
+    nMAE=mean(abs(err))/mean(pred),
+    RMSPE=sqrt(mean(perr^2)),
+    MAPE=mean(abs(perr)))
+}
+```
+
+```{r}
+error_train <- measures(df_plot2$Predicted, df_plot2$Original)
+error_train
+```
+
+

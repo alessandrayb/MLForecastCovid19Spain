@@ -1,0 +1,340 @@
+---
+title: "1. XGBoost"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# XGBoost
+
+## Fit model with xgboost library
+
+```{r}
+source("read/read_xgboost_norandom.R")
+library(xgboost)
+library(caret)
+```
+
+http://datasideoflife.com/?p=1009
+
+## Prepare data
+
+```{r}
+x_train <- as.matrix(train %>% 
+                       dplyr::select(weeks, months, years))
+x_test <- as.matrix(test %>% 
+                      dplyr::select(weeks, months, years))
+y_train <- train$incid
+```
+
+## Grid search
+
+```{r}
+xgb_trcontrol <- caret::trainControl(
+  method = "cv", 
+  number = 10,
+  allowParallel = TRUE, 
+  verboseIter = FALSE, 
+  returnData = FALSE,
+  search = "grid"
+)
+```
+
+```{r}
+set.seed(1234)
+xgb_grid <- expand.grid(max_depth = c(4, 6, 10, 15), 
+                        nrounds = c(1500, 2000, 5000, 7000),    # number of trees
+                        # default values below
+                        eta = 0.2,
+                        gamma = 0,
+                        subsample = 0.01,
+                        min_child_weight = 0.01,
+                        colsample_bytree =0.01)
+```
+
+## Model
+
+```{r}
+# xgb_model <- caret::train(
+#   incid ~ weeks+months+years,
+#   data=train,
+#   trControl = xgb_trcontrol,
+#   tuneGrid = xgb_grid,
+#   method = "xgbTree",
+#   nthread = 5
+# )
+```
+
+```{r}
+# xgb_model$bestTune
+```
+
+```{r}
+# xgb_test <- xgb_model %>% stats::predict(x_test, se.fit=TRUE)
+```
+
+## Plots
+
+```{r}
+# df_plot <- as.data.frame(cbind(extended_data[109:161, ], xgb_test))
+# df_plot2 <- df_plot %>% rename(Original = incid,
+#                                  Predicted = ...7)
+# 
+# library(ggplot2)
+# # png(file="figures/xgboost_norandom.png",
+# #     width=850, height=500)
+# ggplot(data = df_plot2, aes(x=date)) +
+#   geom_line(aes(y=Original, color="Original"))+
+#   geom_line(aes(y=Predicted, color="Predicted"))+
+#   labs(x="Weeks", y="Weekly cases per 100 000")+
+#   scale_color_manual(name="Data", values = c(
+#     "Original"="black", 
+#     "Predicted"="red"))+ 
+#   theme_minimal()
+# # dev.off()
+```
+
+## Error measurements
+
+```{r}
+# measures=function(pred,obs){
+#   
+#   err=pred-obs
+#   perr=err/pred
+#   
+#   c(RMSE=sqrt(mean(err^2)),
+#     MAE=mean(abs(err)),
+#     nMSE=sqrt(mean(err^2))/mean(pred),
+#     nMAE=mean(abs(err))/mean(pred),
+#     RMSPE=sqrt(mean(perr^2)),
+#     MAPE=mean(abs(perr)))
+# }
+```
+
+```{r}
+# error_test <- measures(xgb_test, test$incid)
+# error_test
+```
+
+########
+
+
+## Predictions with test data
+
+Run the model 500 times and obtain 500 predictions for the 53 weeks in the test dataset. 
+
+```{r}
+# Results
+load(file="read/1. XGBoost-predictions500.RData")
+```
+
+Los siguientes 2 chunks no hace falta ejecutarlos. Los resultados se cargan en el chunk anterior. 
+
+```{r, eval=FALSE}
+predictions <- data.frame(matrix(0,53,500))
+set.seed(123)
+seeds <- runif(500,1,100000)
+```
+
+```{r, eval=FALSE}
+for(i in 1:ncol(predictions)){
+  set.seed(seeds[i])
+  xgb_model <- caret::train(
+  incid ~ weeks+months+years,
+  data=train,
+  trControl = xgb_trcontrol,
+  tuneGrid = xgb_grid,
+  method = "xgbTree",
+  nthread = 5)
+
+  predictions[, i] <- xgb_model %>% stats::predict(x_test, se.fit=TRUE)
+}
+```
+
+### Mean points
+
+```{r}
+predictions_median <- apply(as.matrix(predictions), 1, function(x){quantile(x, c(0.5))})
+```
+
+```{r}
+df_plot <- as.data.frame(cbind(extended_data[109:161, ],predictions_median))
+df_plot2 <- df_plot %>% rename(Original = incid,
+                                 Median_Predicted = ...7)
+
+ggplot(data = df_plot2, aes(x=date)) +
+  geom_line(aes(y=Original, color="Original"))+
+  geom_line(aes(y=Median_Predicted, color="Median_Predicted"))+
+  labs(x="Weeks", y="Weekly cases per 100 000")+
+  scale_color_manual(name="Data", values = c(
+    "Original"="black", 
+    "Median_Predicted"="red"))+ 
+  theme_minimal()
+```
+
+### Credible interval   
+
+```{r}
+CI <- apply(as.matrix(predictions), 1, function(x){quantile(x, c(0.025, 0.5, 0.975))})
+```
+
+```{r}
+CI_t <- as.data.frame(t(CI))
+colnames(CI_t) <- c("CI_low", "Median", "CI_upper")
+```
+
+```{r}
+xgboost500 <- cbind(df_plot2, CI_t)
+```
+
+```{r}
+library(ggplot2)
+# png(file="figures/xgboost_500.png",
+#     width=850, height=500)
+ggplot(data = xgboost500, aes(x=date)) +
+  geom_line(aes(y=Original, color="Original"))+
+  geom_line(aes(y=Median_Predicted, color="Median_Predicted"))+
+  geom_ribbon(aes(ymin=CI_low, ymax=CI_upper), alpha = 0.1)+
+  labs(x="Weeks", y="Weekly cases per 100 000")+
+  scale_color_manual(name="Data", values = c(
+    "Original"="black",
+    "Median_Predicted"="red"))+
+  theme_minimal()
+# dev.off()
+```
+
+### Error measurements
+
+```{r}
+measures=function(pred,obs){
+
+  err=pred-obs
+  perr=err/pred
+
+  c(RMSE=sqrt(mean(err^2)),
+    MAE=mean(abs(err)),
+    nMSE=sqrt(mean(err^2))/mean(pred),
+    nMAE=mean(abs(err))/mean(pred),
+    RMSPE=sqrt(mean(perr^2)),
+    MAPE=mean(abs(perr)))
+}
+```
+
+```{r}
+error_test <- measures(xgboost500$Median_Predicted, xgboost500$Original)
+error_test
+```
+
+
+########
+
+
+## Predictions with train data
+
+Run the model 500 times and obtain 500 predictions for the 108 weeks in the train dataset. 
+
+```{r}
+# Results
+load(file="read/1. XGBoost-predictions500_train.RData")
+```
+
+Los siguientes 2 chunks no hace falta ejecutarlos. Los resultados se cargan en el chunk anterior. 
+
+```{r, eval=FALSE}
+predictions <- data.frame(matrix(0,53,500))
+set.seed(123)
+seeds <- runif(500,1,100000)
+```
+
+```{r, eval=FALSE}
+for(i in 1:ncol(predictions)){
+  set.seed(seeds[i])
+  xgb_model <- caret::train(
+  incid ~ weeks+months+years,
+  data=train,
+  trControl = xgb_trcontrol,
+  tuneGrid = xgb_grid,
+  method = "xgbTree",
+  nthread = 5)
+
+  predictions[, i] <- xgb_model %>% stats::predict(x_train, se.fit=TRUE)
+}
+```
+
+### Mean points
+
+```{r}
+predictions_median <- apply(as.matrix(predictions), 1, function(x){quantile(x, c(0.5))})
+```
+
+```{r}
+df_plot <- as.data.frame(cbind(extended_data[1:108, ],predictions_median))
+df_plot2 <- df_plot %>% rename(Original = incid,
+                                 Median_Predicted = ...7)
+
+ggplot(data = df_plot2, aes(x=date)) +
+  geom_line(aes(y=Original, color="Original"))+
+  geom_line(aes(y=Median_Predicted, color="Median_Predicted"))+
+  labs(x="Weeks", y="Weekly cases per 100 000")+
+  scale_color_manual(name="Data", values = c(
+    "Original"="black", 
+    "Median_Predicted"="blue"))+ 
+  scale_x_date(date_labels =  "%b %Y") +
+  theme_minimal()
+```
+
+### Credible interval   
+
+```{r}
+CI <- apply(as.matrix(predictions), 1, function(x){quantile(x, c(0.025, 0.5, 0.975))})
+```
+
+```{r}
+CI_t <- as.data.frame(t(CI))
+colnames(CI_t) <- c("CI_low", "Median", "CI_upper")
+```
+
+```{r}
+xgboost500_train <- cbind(df_plot2, CI_t)
+```
+
+```{r}
+library(ggplot2)
+# png(file="figures/xgboost_500_train.png",
+#     width=850, height=500)
+ggplot(data = xgboost500_train, aes(x=date)) +
+  geom_line(aes(y=Original, color="Original"))+
+  geom_line(aes(y=Median_Predicted, color="Median_Predicted"))+
+  geom_ribbon(aes(ymin=CI_low, ymax=CI_upper), alpha = 0.1)+
+  labs(x="Weeks", y="Weekly cases per 100 000")+
+  scale_color_manual(name="Data", values = c(
+    "Original"="black",
+    "Median_Predicted"="blue"))+
+  scale_x_date(date_labels =  "%b %Y") +
+  theme_minimal()
+# dev.off()
+```
+
+### Error measurements
+
+```{r}
+measures=function(pred,obs){
+
+  err=pred-obs
+  perr=err/pred
+
+  c(RMSE=sqrt(mean(err^2)),
+    MAE=mean(abs(err)),
+    nMSE=sqrt(mean(err^2))/mean(pred),
+    nMAE=mean(abs(err))/mean(pred),
+    RMSPE=sqrt(mean(perr^2)),
+    MAPE=mean(abs(perr)))
+}
+```
+
+```{r}
+error_train <- measures(xgboost500_train$Median_Predicted, xgboost500_train$Original)
+error_train
+```
